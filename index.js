@@ -1,30 +1,41 @@
 'use strict';
 
 const uuid = require('uuid');
-const cls = require('continuation-local-storage');
+const asyncHook = require('async_hooks');
 
-const store = cls.createNamespace('1d0e0c48-3375-46bc-b9ae-95c63b58938e');
+const store = new Map();
+let currentUid = null;
 
-module.exports = {
-  withId: configureArgs(withId),
-  bindId: configureArgs(bindId),
-  getId
-};
-
-function withId (id, work) {
-  store.run(() => {
-    store.set('correlator', id);
-    work();
-  });
+function init (uid, type, triggerId) { 
+  if (store.has(triggerId || currentUid)) {
+    store.set(uid, store.get(triggerId || currentUid));
+  }
 }
 
-function bindId (id, work) {
-  return function () {
-    store.run(() => {
-      store.set('correlator', id);
-      work.apply(null, [].slice.call(arguments));
-    });
-  };
+function before (uid) {    
+  currentUid = uid;
+}
+
+function after () {
+  currentUid = null;
+}
+
+function destroy (uid) {
+  if (store.has(uid)) {
+    store.delete(uid);
+  }
+}
+
+function createContext (id) {
+  if (!currentUid) {
+    throw new Error('`createContext` must be called in an async handle.');
+  }
+  
+  store.set(currentUid, id);    
+}
+
+function isFunction (object) {
+  return typeof object === 'function';
 }
 
 function configureArgs (func) {
@@ -33,16 +44,35 @@ function configureArgs (func) {
       work = id;
       id = uuid.v4();
     }
-    if (!work) throw new Error('Missing work parameter');
+
+    if (!work) {
+      throw new Error('Missing work parameter');
+    }
 
     return func(id, work);
   };
 }
 
-function isFunction (object) {
-  return typeof object === 'function';
+function withId (id, work) {
+  createContext(id);
+  work(id);
+}
+
+function bindId (id, work) {
+  return function () {
+    createContext(id);
+    work.apply(null, [].slice.call(arguments));    
+  };
 }
 
 function getId () {
-  return store.get('correlator');
+  return store.get(currentUid);
 }
+
+asyncHook.createHook({ init, before, after, destroy }).enable();
+
+module.exports = {
+  withId: configureArgs(withId),
+  bindId: configureArgs(bindId),
+  getId
+};
